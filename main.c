@@ -4,6 +4,9 @@
 
 #include "../core/core.h"
 
+#define VERSION "0.3.0.dev"
+#define SIMULATE_MULTIPLE_DIRECTORY 0
+
 FILE_NOTIFY_INFORMATION fileChangeBuffer[64];
 typedef struct {
 	char filename[64];
@@ -15,6 +18,7 @@ int filesCount = 0;
 HANDLE directoryHandles[64];
 HANDLE ioHandles[64];
 OVERLAPPED directoryOverlapped[64];
+string paths[64];
 
 file_info* getFile(char* filename) {
 	for(int i=0; i<filesCount; ++i) {
@@ -55,15 +59,20 @@ int build(char* filename) {
 void handleChange(int dirIndex) {
 	FILE_NOTIFY_INFORMATION *fileChange = fileChangeBuffer;
 	while(fileChange) {
-		char filename[64] = {0};
+		char rawFileName[MAX_PATH+1] = {0};
 		for(int i=0; i<fileChange->FileNameLength/sizeof(*fileChange->FileName); ++i) {
-			filename[i] = fileChange->FileName[i];
+			rawFileName[i] = fileChange->FileName[i];
 		}
+		string filename = s_create(rawFileName);
+		s_prepend(&filename, "/");
+		s_prepend(&filename, paths[dirIndex]);
+		printf("file change %s \n", filename);
+		s_free(filename);
 
-		if( sfind(filename, ".c") ||
-			sfind(filename, ".h") ||
-			sfind(filename, ".txt") ||
-			sfind(filename, ".sh")) {
+		if( s_find(filename, ".c", 0) ||
+			s_find(filename, ".h", 0) ||
+			s_find(filename, ".txt", 0) ||
+			s_find(filename, ".sh", 0)) {
 			file_info* file = getFile(filename);
 			HANDLE fileHandle = CreateFileA(
 				filename,
@@ -73,21 +82,30 @@ void handleChange(int dirIndex) {
 				OPEN_EXISTING,
 				FILE_ATTRIBUTE_NORMAL,
 				NULL);
-			FILETIME lastWriteTime;
-			GetFileTime(fileHandle, NULL, NULL, &lastWriteTime);
+			// if(fileHandle == INVALID_HANDLE_VALUE) {
+			// 	printf("CreateFileA failed with error code %d \n", GetLastError());
+			// 	return;
+			// }
+			FILETIME fileTime = {0};
+			GetFileTime(fileHandle, NULL, NULL, &fileTime);
 
 			// the laste write time is the number of 100-nanosecond intervals
-			unsigned long long writeTime = (long long )lastWriteTime.dwHighDateTime<<32 | lastWriteTime.dwLowDateTime;
+			unsigned long long writeTime = ((long long )fileTime.dwHighDateTime)<<32 | fileTime.dwLowDateTime;
 			writeTime /= 10 * 1000; // milliseconds
 
 			if(file) {
+				// printf("file change %s, diff %li \n", filename, writeTime-file->lastWriteTime);
+				// printf("%li, %li (%i, %i) \n", writeTime, file->lastWriteTime, fileTime.dwHighDateTime, fileTime.dwLowDateTime);
 				// If more than a second has passed
 				if(writeTime-file->lastWriteTime > 1000) {
 					// printf("file changed %s time difference %li \n", filename, writeTime-file->lastWriteTime);
 					file->lastWriteTime = writeTime;
 					build(filename);
+				} else {
+					printf("didn't change file %s, diff %li \n", filename, writeTime-file->lastWriteTime);
 				}
 			} else {
+				// printf("file change %s, new \n", filename);
 				addFile(filename, writeTime);
 				build(filename);
 			}
@@ -107,9 +125,7 @@ void completionRoutine(DWORD dwErrorCode, DWORD dwNumberOfBytesTransfered, LPOVE
 	// printf("dir %i \n", lpOverlapped->hEvent);
 	int dirIndex = lpOverlapped->hEvent;
 
-	handleChange(dirIndex);
-
-	ReadDirectoryChangesW(
+	BOOL readResult = ReadDirectoryChangesW(
 		directoryHandles[dirIndex],
 		fileChangeBuffer,
 		sizeof(fileChangeBuffer),
@@ -118,16 +134,23 @@ void completionRoutine(DWORD dwErrorCode, DWORD dwNumberOfBytesTransfered, LPOVE
 		NULL,
 		&directoryOverlapped[dirIndex],
 		&completionRoutine);
+	if(!readResult) {
+		printf("\033[91mReadDirectoryChangesW failed\033[0m \n");
+	}
+
+	handleChange(dirIndex);
 }
 
-int main(int argc, char **argv) {
-	if(argc < 2) {
+int main(int _argc, char **_argv) {
+	if(_argc < 2) {
 		printf("Arg 1 should be a directory to watch \n");
 		exit(1);
 	}
 
-	char* dirPath = argv[1];
-	SetCurrentDirectoryA(dirPath);
+	u8 strBuffer[PAGE_SIZE];
+	string_pool spool;
+	s_create_pool(&spool, strBuffer, sizeof(strBuffer));
+	s_pool(&spool);
 
 	// HANDLE notificationHandle = FindFirstChangeNotificationA(
 	// 	"./*.c",
@@ -138,15 +161,27 @@ int main(int argc, char **argv) {
 	// 	printf("Failed with error code %d \n", GetLastError());
 	// }
 
-	int dirCount = argc-1;
+	int dirCount = _argc-1;
 	if(dirCount > 64) {
 		printf("Too many directories \n");
 		exit(1);
 	}
+
+	for(int i=0; i<dirCount; ++i) {
+		paths[i] = s_create(_argv[i+1]);
+	}
+
+	char* cwd = paths[0];
+	SetCurrentDirectoryA(cwd);
+
+	if(dirCount > 1 && SIMULATE_MULTIPLE_DIRECTORY) {
+		dirCount = 1;
+		s_append(paths, "/..");
+	}
 	
 	for(int i=0; i<dirCount; ++i) {
 		directoryHandles[i] = CreateFileA(
-			argv[i+1],
+			paths[i],
 			FILE_LIST_DIRECTORY,
 			FILE_SHARE_DELETE|FILE_SHARE_READ|FILE_SHARE_WRITE,
 			NULL,
@@ -154,13 +189,14 @@ int main(int argc, char **argv) {
 			FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OVERLAPPED,
 			NULL);
 
-		ioHandles[i] = CreateEventA(NULL, FALSE, FALSE, argv[i+1]);
+		ioHandles[i] = CreateEventA(NULL, FALSE, FALSE, paths[i]);
 		directoryOverlapped[i] = (OVERLAPPED){0};
 		directoryOverlapped[i].hEvent = i;//ioHandles[i];
 	}
 
+	printf("\033[93mcwatch version %s\033[0m \n", VERSION);
 	printf("\033[93mlistening on:\033[0m \n");
-	for(int i=0; i<dirCount; ++i) printf("\033[93m%s\033[0m \n", argv[i+1]);
+	for(int i=0; i<dirCount; ++i) printf("\033[93m%s\033[0m \n", paths[i]);
 
 	for(int i=0; i<dirCount; ++i) {
 		long bytes;
@@ -173,10 +209,16 @@ int main(int argc, char **argv) {
 			&bytes,
 			&directoryOverlapped[i],
 			&completionRoutine);
+		if(!read) {
+			printf("\033[91mReadDirectoryChangesW failed\033[0m \n");
+		}
 	}
 
 	for(;;) {
 		DWORD waitResult = WaitForMultipleObjectsEx(dirCount, directoryHandles, FALSE, INFINITE, TRUE);
+		if(waitResult != WAIT_IO_COMPLETION) {
+			printf("\033[91mWaitForMultipleObjectsEx returned something other than WAIT_IO_COMPLETION: %i\033[0m \n", waitResult);
+		}
 		// TODO what is waitResult now?
 		// printf("waitResult %i \n", waitResult);
 
