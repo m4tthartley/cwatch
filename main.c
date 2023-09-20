@@ -42,6 +42,10 @@ void clear() {
 }
 
 int build(char* filename) {
+	char cwd[MAX_PATH] = {0};
+	GetCurrentDirectoryA(MAX_PATH, cwd);
+	SetCurrentDirectoryA(paths[0]);
+
 	clear();
 	printf("file changed %s \n", filename);
 
@@ -53,6 +57,8 @@ int build(char* filename) {
 	} else {
 		printf("\033[91mbuild failed\033[0m \n");
 	}
+
+	SetCurrentDirectoryA(cwd);
 	return result;
 }
 
@@ -171,8 +177,8 @@ int main(int _argc, char **_argv) {
 		paths[i] = s_create(_argv[i+1]);
 	}
 
-	char* cwd = paths[0];
-	SetCurrentDirectoryA(cwd);
+	// char* cwd = paths[0];
+	// SetCurrentDirectoryA(cwd);
 
 	if(dirCount > 1 && SIMULATE_MULTIPLE_DIRECTORY) {
 		dirCount = 1;
@@ -188,6 +194,9 @@ int main(int _argc, char **_argv) {
 			OPEN_EXISTING,
 			FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OVERLAPPED,
 			NULL);
+		if(!directoryHandles[i] == INVALID_HANDLE_VALUE) {
+			printf("\033[91mCreateFileA failed\033[0m \n");
+		}
 
 		ioHandles[i] = CreateEventA(NULL, FALSE, FALSE, paths[i]);
 		directoryOverlapped[i] = (OVERLAPPED){0};
