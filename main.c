@@ -64,6 +64,7 @@ int build(char* filename) {
 
 void handleChange(int dirIndex) {
 	FILE_NOTIFY_INFORMATION *fileChange = fileChangeBuffer;
+	int loop_count = 0;
 	while(fileChange) {
 		char rawFileName[MAX_PATH+1] = {0};
 		for(int i=0; i<fileChange->FileNameLength/sizeof(*fileChange->FileName); ++i) {
@@ -120,6 +121,7 @@ void handleChange(int dirIndex) {
 
 		if(fileChange->NextEntryOffset) {
 			fileChange = (char*)fileChange + fileChange->NextEntryOffset;
+			++loop_count;
 		} else {
 			fileChange = 0;
 		}
@@ -130,6 +132,10 @@ void completionRoutine(DWORD dwErrorCode, DWORD dwNumberOfBytesTransfered, LPOVE
 	// printf("LpoverlappedCompletionRoutine %i \n", dwErrorCode);
 	// printf("dir %i \n", lpOverlapped->hEvent);
 	int dirIndex = lpOverlapped->hEvent;
+
+	handleChange(dirIndex);
+
+	memset(fileChangeBuffer, 0, sizeof(fileChangeBuffer));
 
 	BOOL readResult = ReadDirectoryChangesW(
 		directoryHandles[dirIndex],
@@ -143,8 +149,6 @@ void completionRoutine(DWORD dwErrorCode, DWORD dwNumberOfBytesTransfered, LPOVE
 	if(!readResult) {
 		printf("\033[91mReadDirectoryChangesW failed\033[0m \n");
 	}
-
-	handleChange(dirIndex);
 }
 
 int main(int _argc, char **_argv) {
