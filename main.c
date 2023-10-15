@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <locale.h>
 
-#include "../core/core.h"
+#include <core/core.h>
 
 #define VERSION "0.3.0.dev"
 #define SIMULATE_MULTIPLE_DIRECTORY 0
@@ -30,15 +30,16 @@ file_info* getFile(char* filename) {
 }
 
 void addFile(char* filename, unsigned long long lastWriteTime) {
+	printf("adding file %s \n", filename);
 	if(filesCount < 256) {
 		file_info* file = &files[filesCount++];
-		strcpy(file->filename, filename);
+		strncpy(file->filename, filename, 63);
 		file->lastWriteTime = lastWriteTime;
 	}
 }
 
 void clear() {
-	system("cls");
+	// system("cls");
 }
 
 int build(char* filename) {
@@ -63,9 +64,12 @@ int build(char* filename) {
 }
 
 void handleChange(int dirIndex) {
+	printf("Handling file changes... \n");
 	FILE_NOTIFY_INFORMATION *fileChange = fileChangeBuffer;
 	int loop_count = 0;
 	while(fileChange) {
+		printf("\nFILE_NOTIFY_INFORMATION \n");
+		printf("offset is %i \n", fileChange->NextEntryOffset);
 		char rawFileName[MAX_PATH+1] = {0};
 		for(int i=0; i<fileChange->FileNameLength/sizeof(*fileChange->FileName); ++i) {
 			rawFileName[i] = fileChange->FileName[i];
@@ -75,6 +79,8 @@ void handleChange(int dirIndex) {
 		s_prepend(&filename, paths[dirIndex]);
 		printf("file change %s \n", filename);
 		s_free(filename);
+
+		printf("after filename conversion %i \n", fileChange->NextEntryOffset);
 
 		if( s_find(filename, ".c", 0) ||
 			s_find(filename, ".h", 0) ||
@@ -107,19 +113,61 @@ void handleChange(int dirIndex) {
 				if(writeTime-file->lastWriteTime > 1000) {
 					// printf("file changed %s time difference %li \n", filename, writeTime-file->lastWriteTime);
 					file->lastWriteTime = writeTime;
-					build(filename);
+					
+					// build(filename);
+					{
+						int next_offset1 = fileChange->NextEntryOffset;
+						printf("before build %i \n", fileChange->NextEntryOffset);
+
+						char cwd[MAX_PATH] = {0};
+						GetCurrentDirectoryA(MAX_PATH, cwd);
+						SetCurrentDirectoryA(paths[0]);
+
+						printf("during build 1 %i \n", fileChange->NextEntryOffset);
+
+						clear();
+						printf("file changed %s \n", filename);
+
+						printf("during build 2 %i \n", fileChange->NextEntryOffset);
+
+						int result = system("sh ./build.sh");
+						// printf("result %i \n", result);
+
+						printf("during build 3 %i \n", fileChange->NextEntryOffset);
+
+						if(!result) {
+							printf("\033[92mbuild successful\033[0m \n");
+						} else {
+							printf("\033[91mbuild failed\033[0m \n");
+						}
+
+						SetCurrentDirectoryA(cwd);
+
+						printf("after build %i \n", fileChange->NextEntryOffset);
+						if (fileChange->NextEntryOffset != next_offset1) {
+							int x = 0;
+						}
+					}
 				} else {
 					printf("didn't change file %s, diff %li \n", filename, writeTime-file->lastWriteTime);
 				}
 			} else {
 				// printf("file change %s, new \n", filename);
+				printf("before add file %i \n", fileChange->NextEntryOffset);
 				addFile(filename, writeTime);
+				printf("before build %i \n", fileChange->NextEntryOffset);
 				build(filename);
 			}
 			CloseHandle(fileHandle);
 		}
 
+		printf("after if %i \n", fileChange->NextEntryOffset);
+
 		if(fileChange->NextEntryOffset) {
+			printf("offsetting by %i \n", fileChange->NextEntryOffset);
+			if (fileChange->NextEntryOffset > 64) {
+				int x = 0;
+			}
 			fileChange = (char*)fileChange + fileChange->NextEntryOffset;
 			++loop_count;
 		} else {
@@ -129,9 +177,9 @@ void handleChange(int dirIndex) {
 }
 
 void completionRoutine(DWORD dwErrorCode, DWORD dwNumberOfBytesTransfered, LPOVERLAPPED lpOverlapped) {
-	// printf("LpoverlappedCompletionRoutine %i \n", dwErrorCode);
-	// printf("dir %i \n", lpOverlapped->hEvent);
-	int dirIndex = lpOverlapped->hEvent;
+	printf("completion routine \n");
+	
+	int dirIndex = *((int*)&lpOverlapped->hEvent);
 
 	handleChange(dirIndex);
 
@@ -198,13 +246,13 @@ int main(int _argc, char **_argv) {
 			OPEN_EXISTING,
 			FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OVERLAPPED,
 			NULL);
-		if(!directoryHandles[i] == INVALID_HANDLE_VALUE) {
+		if(directoryHandles[i] == INVALID_HANDLE_VALUE) {
 			printf("\033[91mCreateFileA failed\033[0m \n");
 		}
 
 		ioHandles[i] = CreateEventA(NULL, FALSE, FALSE, paths[i]);
 		directoryOverlapped[i] = (OVERLAPPED){0};
-		directoryOverlapped[i].hEvent = i;//ioHandles[i];
+		directoryOverlapped[i].hEvent = (void*)(u64)i;//ioHandles[i];
 	}
 
 	printf("\033[93mcwatch version %s\033[0m \n", VERSION);
